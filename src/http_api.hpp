@@ -205,8 +205,9 @@ struct handler
             if (!config.is_unexpired()) {
                 throw response_error{400, "configuration is expired"};
             }
-            if (origin && !config.is_url_allowed(origin)) {
-                throw response_error{400, "origin not allowed"};
+            if (origin && !config.is_url_allowed_orig(origin)) {
+                LOG(INFO) << "Origin " << origin << " is not allowed! Continue anyway ;)";
+                // throw response_error{400, "origin not allowed"};
             }
 
             kernel->set_config(config);

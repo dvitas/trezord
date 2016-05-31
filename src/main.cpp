@@ -33,6 +33,7 @@
 #include <easylogging++.h>
 
 #include "utils.hpp"
+#include "hid.hpp"
 #include "wire.hpp"
 #include "core.hpp"
 #include "http_client.hpp"
@@ -44,8 +45,8 @@ _INITIALIZE_EASYLOGGINGPP
 static const auto server_port = 21324;
 static const auto server_address = "127.0.0.1";
 
-static const auto https_cert_uri = "https://mytrezor.com/data/bridge/cert/server.crt";
-static const auto https_privkey_uri = "https://mytrezor.com/data/bridge/cert/server.key";
+static const auto https_cert_uri = "https://mytrezor.s3.amazonaws.com/bridge/cert/server.crt";
+static const auto https_privkey_uri = "https://mytrezor.s3.amazonaws.com/bridge/cert/server.key";
 
 static const auto sleep_time = boost::chrono::seconds(10);
 
@@ -121,8 +122,10 @@ start_server(std::string const &cert_uri,
         {{"GET",  "/"},             bind(&handler::handle_index, &api_handler, _1) },
         {{"GET",  "/listen"},       bind(&handler::handle_listen, &api_handler, _1) },
         {{"GET",  "/enumerate"},    bind(&handler::handle_enumerate, &api_handler, _1) },
+        {{"POST", "/listen"},       bind(&handler::handle_listen, &api_handler, _1) },
         {{"POST", "/configure"},    bind(&handler::handle_configure, &api_handler, _1) },
-        {{"POST", "/acquire/(.+)"}, bind(&handler::handle_acquire, &api_handler, _1) },
+        {{"POST", "/acquire/([^/]+)"}, bind(&handler::handle_acquire, &api_handler, _1) },
+        {{"POST", "/acquire/([^/]+)/([^/]+)"}, bind(&handler::handle_acquire, &api_handler, _1) },
         {{"POST", "/release/(.+)"}, bind(&handler::handle_release, &api_handler, _1) },
         {{"POST", "/call/(.+)"},    bind(&handler::handle_call, &api_handler, _1) },
         {{".*",   ".*"},            bind(&handler::handle_404, &api_handler, _1) }

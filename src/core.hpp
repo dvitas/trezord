@@ -190,13 +190,24 @@ struct kernel
         : public std::invalid_argument
     { using std::invalid_argument::invalid_argument; };
 
+    struct wrong_previous_session
+        : public std::invalid_argument
+    { using std::invalid_argument::invalid_argument; };
+
 public:
 
     kernel()
-        : pb_state{},
-          pb_wire_codec{pb_state},
-          pb_json_codec{pb_state}
-    {}
+        : pb_state{new protobuf::state{}},
+          pb_wire_codec{new protobuf::wire_codec{pb_state.get()}},
+          pb_json_codec{new protobuf::json_codec{pb_state.get()}}
+    {
+        hid::init();
+    }
+
+    ~kernel()
+    {
+        hid::exit();
+    }
 
     std::string
     get_version()
@@ -217,8 +228,13 @@ public:
 
         config = new_config;
 
-        pb_state.load_from_set(config.c.wire_protocol());
-        pb_wire_codec.load_protobuf_state();
+        pb_state.reset(new protobuf::state{});
+        pb_state->load_from_set(config.c.wire_protocol());
+
+        pb_wire_codec.reset(new protobuf::wire_codec{pb_state.get()});
+        pb_wire_codec->load_protobuf_state();
+
+        pb_json_codec.reset(new protobuf::json_codec{pb_state.get()});
     }
 
     bool
@@ -235,10 +251,14 @@ public:
 
     // device enumeration
 
-    utils::async_executor *
-    get_enumeration_executor()
-    {
-        return &enumeration_executor;
+    session_id_type
+    find_session_by_path(device_path_type const &path) {
+        auto it = sessions.find(path);
+        if (it != sessions.end()) {
+            return it->second;
+        } else {
+            return "";
+        }
     }
 
     device_enumeration_type
@@ -253,30 +273,14 @@ public:
         device_enumeration_type list;
 
         for (auto const &i: enumerate_supported_devices()) {
-            auto it = sessions.find(i.path);
-            if (it != sessions.end()) {
-                list.emplace_back(i, it->second);
-            } else {
-                list.emplace_back(i, "");
-            }
+            auto session_id = find_session_by_path(i.path);
+            list.emplace_back(i, session_id);
         }
 
         return list;
     }
 
-    bool
-    is_path_supported(device_path_type const &device_path)
-    {
-        auto devices = enumerate_devices();
-        return std::any_of(
-            devices.begin(),
-            devices.end(),
-            [&] (decltype(devices)::value_type const &i) {
-                return i.first.path == device_path;
-            });
-    }
-
-    // device kernels and executors
+    // device kernels
 
     device_kernel *
     get_device_kernel(device_path_type const &device_path)
@@ -318,46 +322,6 @@ public:
         return get_device_kernel(session_it->first);
     }
 
-    utils::async_executor *
-    get_device_executor(device_path_type const &device_path)
-    {
-        lock_type lock{mutex};
-
-        if (!has_config()) {
-            throw missing_config{"not configured"};
-        }
-
-        auto executor_r = device_executors.emplace(
-            std::piecewise_construct,
-            std::forward_as_tuple(device_path),
-            std::forward_as_tuple());
-
-        return &executor_r.first->second;
-    }
-
-    utils::async_executor *
-    get_device_executor_by_session_id(session_id_type const &session_id)
-    {
-        lock_type lock{mutex};
-
-        if (!has_config()) {
-            throw missing_config("not configured");
-        }
-
-        auto session_it = std::find_if(
-            sessions.begin(),
-            sessions.end(),
-            [&] (decltype(sessions)::value_type const &kv) {
-                return kv.second == session_id;
-            });
-
-        if (session_it == sessions.end()) {
-            throw unknown_session{"session not found"};
-        }
-
-        return get_device_executor(session_it->first);
-    }
-
     // session management
 
     session_id_type
@@ -395,22 +359,51 @@ public:
         }
     }
 
+
+    session_id_type
+    open_and_acquire_session(device_path_type const &device_path,
+                    session_id_type const &previous_id,
+                    bool check_previous)
+    {
+        lock_type lock{mutex};
+
+        auto real_previous_id = find_session_by_path(device_path);
+        if (check_previous && real_previous_id != previous_id) {
+            CLOG(INFO, "core.kernel") << "not acquiring session for: " << device_path << " , wrong previous";
+            throw wrong_previous_session{"wrong previous session"};
+        }
+        if (!(real_previous_id.empty())) {
+            close_and_release_session(real_previous_id);
+        }
+
+        get_device_kernel(device_path)->open();
+        return acquire_session(device_path);
+    }
+
+    void
+    close_and_release_session(session_id_type const &session_id)
+    {
+        lock_type lock{mutex};
+        get_device_kernel_by_session_id(session_id)->close();
+        release_session(session_id);
+    }
+
     // protobuf <-> json codec
 
     void
     json_to_wire(Json::Value const &json, wire::message &wire)
     {
         lock_type lock{mutex};
-        protobuf_ptr pbuf{pb_json_codec.typed_json_to_protobuf(json)};
-        pb_wire_codec.protobuf_to_wire(*pbuf, wire);
+        protobuf_ptr pbuf{pb_json_codec->typed_json_to_protobuf(json)};
+        pb_wire_codec->protobuf_to_wire(*pbuf, wire);
     }
 
     void
     wire_to_json(wire::message const &wire, Json::Value &json)
     {
         lock_type lock{mutex};
-        protobuf_ptr pbuf{pb_wire_codec.wire_to_protobuf(wire)};
-        json = pb_json_codec.protobuf_to_typed_json(*pbuf);
+        protobuf_ptr pbuf{pb_wire_codec->wire_to_protobuf(wire)};
+        json = pb_json_codec->protobuf_to_typed_json(*pbuf);
     }
 
 private:
@@ -421,19 +414,19 @@ private:
     boost::recursive_mutex mutex;
 
     kernel_config config;
-    protobuf::state pb_state;
-    protobuf::wire_codec pb_wire_codec;
-    protobuf::json_codec pb_json_codec;
+    std::unique_ptr<protobuf::state> pb_state;
+    std::unique_ptr<protobuf::wire_codec> pb_wire_codec;
+    std::unique_ptr<protobuf::json_codec> pb_json_codec;
 
-    utils::async_executor enumeration_executor;
-    std::map<device_path_type, utils::async_executor> device_executors;
     std::map<device_path_type, device_kernel> device_kernels;
     std::map<device_path_type, session_id_type> sessions;
     boost::uuids::random_generator uuid_generator;
 
     session_id_type
     generate_session_id()
-    { return boost::lexical_cast<session_id_type>(uuid_generator()); }
+    {
+        return boost::lexical_cast<session_id_type>(uuid_generator());
+    }
 
     wire::device_info_list
     enumerate_supported_devices()

@@ -11,7 +11,7 @@ VERSION=$(cat ../../VERSION)
 cd ../../$BUILDDIR
 
 install -D -m 0755 trezord                          ./usr/bin/trezord
-install -D -m 0644 ../release/linux/trezor.rules    ./usr/lib/udev/rules.d/23-trezor.rules
+install -D -m 0644 ../release/linux/trezor.rules    ./lib/udev/rules.d/51-trezor.rules
 install -D -m 0755 ../release/linux/trezord.init    ./etc/init.d/trezord
 install -D -m 0644 ../release/linux/trezord.service ./usr/lib/systemd/system/trezord.service
 
@@ -20,7 +20,7 @@ strip ./usr/bin/trezord
 NAME=trezor-bridge
 
 rm -f *.deb *.rpm *.tar.bz2
-tar cfj $NAME-$VERSION.tar.bz2 ./etc ./usr
+tar cfj $NAME-$VERSION.tar.bz2 ./etc ./usr ./lib --exclude=./lib/jsoncpp
 
 for TYPE in "deb" "rpm"; do
 	case "$TARGET-$TYPE" in
@@ -49,7 +49,8 @@ for TYPE in "deb" "rpm"; do
 		-v $VERSION \
 		--license "LGPL-3.0" \
 		--vendor "SatoshiLabs" \
-		--maintainer "stick@satoshilabs.com" \
+		--description "Communication daemon for TREZOR" \
+		--maintainer "SatoshiLabs <stick@satoshilabs.com>" \
 		--url "http://bitcointrezor.com/" \
 		--category "Productivity/Security" \
 		--before-install ../release/linux/fpm.before-install.sh \
@@ -59,4 +60,4 @@ for TYPE in "deb" "rpm"; do
 		$NAME-$VERSION.tar.bz2
 done
 
-rm -rf ./etc ./usr
+rm -rf ./etc ./usr ./lib
